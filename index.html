@@ -457,9 +457,10 @@
     <div class="s-sec-t">Diagnostics (last 20 events)</div>
     <div style="background:var(--card);border-radius:11px;border:1px solid var(--border);padding:10px;margin-bottom:10px;">
       <div id="syncLogBody" style="max-height:38vh;overflow-y:auto;"></div>
-      <div style="display:flex;gap:6px;margin-top:8px;">
-        <button onclick="manualSync()" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:7px;background:var(--bg);font-size:11px;font-weight:600;cursor:pointer;">↻ Run Sync Now</button>
-        <button onclick="clearSyncLog()" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:7px;background:var(--bg);font-size:11px;font-weight:600;cursor:pointer;">Clear Log</button>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+        <button onclick="manualSync()" style="flex:1;min-width:90px;padding:8px;border:1px solid var(--border);border-radius:7px;background:var(--bg);font-size:11px;font-weight:600;cursor:pointer;">↻ Run Sync</button>
+        <button onclick="testConnectivity()" style="flex:1;min-width:90px;padding:8px;border:1px solid var(--border);border-radius:7px;background:var(--bg);font-size:11px;font-weight:600;cursor:pointer;">🔬 Test URL</button>
+        <button onclick="clearSyncLog()" style="flex:1;min-width:90px;padding:8px;border:1px solid var(--border);border-radius:7px;background:var(--bg);font-size:11px;font-weight:600;cursor:pointer;">Clear Log</button>
       </div>
     </div>
     <div class="s-sec-t">Setup Instructions</div>
@@ -884,17 +885,16 @@ function renderSyncLog(){
 }
 function clearSyncLog(){localStorage.removeItem('sync_log');renderSyncLog();}
 
-// Pull uses POST with action:'read' instead of GET. Reason: GET to /exec
-// 302-redirects in a way that breaks under several browser conditions
-// (cookie-aware cross-origin redirects, owner-signed-in user routing).
-// POST with credentials:'omit' + text/plain stays anonymous and works.
+// Pull uses POST (same shape as push, which works) with action:'read'.
 async function pullFromSheets(){
   const url = getSheetsUrl();
   if(!url){logSync('err','pull','No URL set');return null;}
   const tok = getSheetsToken();
   if(!tok){logSync('err','pull','No token set');return null;}
+  // Log what we're about to send (URL prefix + token length only)
+  logSync('info','pull','Trying URL='+url.slice(0,55)+'…  tokLen='+tok.length);
   try{
-    const r = await fetch(url, {
+    const r = await fetch(urlWithToken(url), {
       method:'POST',
       mode:'cors',
       credentials:'omit',
@@ -926,10 +926,41 @@ async function pullFromSheets(){
     }
     setSyncBadge('error');
   }catch(e){
-    logSync('err','pull','Network/fetch threw', e.message||String(e));
+    const detail = (e&&e.name?e.name+': ':'')+(e&&e.message||String(e));
+    logSync('err','pull','Fetch threw ('+detail+'). If "Failed to fetch": script.google.com may be blocked by network, or the URL is malformed.', urlWithToken(url));
     setSyncBadge('error');
   }
   return null;
+}
+
+// Smoke-test: send the simplest possible request and report the raw response
+// (works regardless of CORS because we read text)
+async function testConnectivity(){
+  const url = getSheetsUrl();
+  const tok = getSheetsToken();
+  if(!url||!tok){logSync('err','test','URL or token missing in Sync tab');return;}
+  logSync('info','test','GET '+url.slice(0,55)+'… (no callback)');
+  try{
+    const r = await fetch(urlWithToken(url), {method:'GET', mode:'cors', credentials:'omit'});
+    const t = await r.text();
+    logSync('ok','test','HTTP '+r.status+' · '+t.slice(0,300), t.length>300?('full length '+t.length):'');
+  }catch(e){
+    logSync('err','test','GET threw: '+(e&&e.message), '');
+  }
+  logSync('info','test','POST '+url.slice(0,55)+'…');
+  try{
+    const r = await fetch(urlWithToken(url), {
+      method:'POST',
+      mode:'cors',
+      credentials:'omit',
+      body:JSON.stringify({action:'read', __token:tok}),
+      headers:{'Content-Type':'text/plain'}
+    });
+    const t = await r.text();
+    logSync('ok','test','HTTP '+r.status+' · '+t.slice(0,300), t.length>300?('full length '+t.length):'');
+  }catch(e){
+    logSync('err','test','POST threw: '+(e&&e.message), '');
+  }
 }
 
 async function pushToSheets(data){
