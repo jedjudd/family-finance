@@ -884,60 +884,52 @@ function renderSyncLog(){
 }
 function clearSyncLog(){localStorage.removeItem('sync_log');renderSyncLog();}
 
-// Pull uses JSONP (<script> tag) instead of fetch() because Apps Script /exec
-// 302-redirects to googleusercontent.com without CORS headers on the redirect,
-// which causes "Failed to fetch" with mode:'cors'. Script tags follow redirects
-// natively and don't care about CORS.
-function pullFromSheets(){
-  return new Promise(resolve=>{
-    const url = getSheetsUrl();
-    if(!url){logSync('err','pull','No URL set');resolve(null);return;}
-    const tok = getSheetsToken();
-    if(!tok){logSync('err','pull','No token set');resolve(null);return;}
-    const cb = 'ffcb_'+Math.random().toString(36).slice(2,10);
-    const sep = url.indexOf('?')>=0 ? '&' : '?';
-    const src = url + sep + 'token=' + encodeURIComponent(tok) + '&callback=' + cb + '&t=' + Date.now();
-    let done=false;
-    const cleanup = ()=>{
-      try{ delete window[cb]; }catch(e){}
-      if(s.parentNode) s.parentNode.removeChild(s);
-    };
-    const timer = setTimeout(()=>{
-      if(done) return; done=true;
-      cleanup();
-      logSync('err','pull','Timed out after 30s — script never called the callback. Likely auth (signed-in-as-owner redirect) or script not deployed with JSONP support.', src);
+// Pull uses POST with action:'read' instead of GET. Reason: GET to /exec
+// 302-redirects in a way that breaks under several browser conditions
+// (cookie-aware cross-origin redirects, owner-signed-in user routing).
+// POST with credentials:'omit' + text/plain stays anonymous and works.
+async function pullFromSheets(){
+  const url = getSheetsUrl();
+  if(!url){logSync('err','pull','No URL set');return null;}
+  const tok = getSheetsToken();
+  if(!tok){logSync('err','pull','No token set');return null;}
+  try{
+    const r = await fetch(url, {
+      method:'POST',
+      mode:'cors',
+      credentials:'omit',
+      body:JSON.stringify({action:'read', __token:tok}),
+      headers:{'Content-Type':'text/plain'}
+    });
+    const text = await r.text();
+    if(!r.ok){
+      logSync('err','pull','HTTP '+r.status+' '+r.statusText, text.slice(0,400));
       setSyncBadge('error');
-      resolve(null);
-    }, 30000);
-    window[cb] = function(j){
-      if(done) return; done=true;
-      clearTimeout(timer); cleanup();
-      if(j && j.ok){
-        const keys = j.data ? Object.keys(j.data).length : 0;
-        logSync('ok','pull','Got '+keys+' keys');
-        resolve(j.data);
-        return;
-      }
-      if(j && j.error === 'unauthorized'){
-        logSync('err','pull','Token rejected by script — check Sync tab token matches SHARED_TOKEN');
-      } else {
-        logSync('err','pull','Script returned error', (j&&j.error)||JSON.stringify(j||{}));
-      }
+      return null;
+    }
+    let j;
+    try { j = JSON.parse(text); }
+    catch(parseErr){
+      logSync('err','pull','Response was not JSON (likely an HTML redirect/login page)', text.slice(0,400));
       setSyncBadge('error');
-      resolve(null);
-    };
-    const s = document.createElement('script');
-    s.src = src;
-    s.async = true;
-    s.onerror = ()=>{
-      if(done) return; done=true;
-      clearTimeout(timer); cleanup();
-      logSync('err','pull','Script tag failed to load — bad URL, network down, or script not deployed', src);
-      setSyncBadge('error');
-      resolve(null);
-    };
-    document.head.appendChild(s);
-  });
+      return null;
+    }
+    if(j.ok){
+      const keys = j.data ? Object.keys(j.data).length : 0;
+      logSync('ok','pull','Got '+keys+' keys');
+      return j.data;
+    }
+    if(j.error === 'unauthorized'){
+      logSync('err','pull','Token rejected by script — check Sync tab token matches SHARED_TOKEN');
+    } else {
+      logSync('err','pull','Script returned error', j.error||JSON.stringify(j));
+    }
+    setSyncBadge('error');
+  }catch(e){
+    logSync('err','pull','Network/fetch threw', e.message||String(e));
+    setSyncBadge('error');
+  }
+  return null;
 }
 
 async function pushToSheets(data){
